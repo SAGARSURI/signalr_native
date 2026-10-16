@@ -1,0 +1,21 @@
+// Applied from the plugin's build.gradle(.kts), which tool/verify.sh takes from
+// `flutter create --template=plugin` so AGP/Kotlin versions always match the local Flutter.
+
+dependencies {
+    // Official ASP.NET Core SignalR Java client; versions verified by spike (a).
+    implementation 'com.microsoft.signalr:signalr:10.0.13'
+    implementation 'com.microsoft.signalr.messagepack:signalr-messagepack:10.0.13'
+
+    // The client declares these as `implementation`; the adapter uses them directly.
+    implementation 'com.google.code.gson:gson:2.8.9'
+    implementation 'org.msgpack:jackson-dataformat-msgpack:0.9.11'
+    implementation 'io.reactivex.rxjava3:rxjava:3.0.11'
+
+    // Pigeon 29 generates coroutine-based Kotlin; the plugin hops to Dispatchers.Main.
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+
+    testImplementation 'junit:junit:4.13.2'
+    // Lets JUnit 4 tests run if the template enables the JUnit Platform.
+    testRuntimeOnly 'org.junit.vintage:junit-vintage-engine:5.11.2'
+    testRuntimeOnly 'org.slf4j:slf4j-nop:1.7.25'
+}

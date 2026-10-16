@@ -1,0 +1,29 @@
+name: signalr_native
+description: >-
+  Flutter SignalR client backed by the official ASP.NET Core SignalR Java (Android)
+  and Swift (iOS) clients, built for high-throughput, traceable trading streams.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  pigeon: ^29.0.10
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.faciletech.signalr_native
+        pluginClass: SignalRNativePlugin
+      ios:
+        pluginClass: SignalRNativePlugin

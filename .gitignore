@@ -1,0 +1,45 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+coverage/
+
+# Pigeon output — regenerate with `dart run pigeon --input pigeons/messages.dart`
+lib/src/generated/
+android/src/main/kotlin/com/faciletech/signalr_native/Messages.g.kt
+ios/signalr_native/Sources/signalr_native/Messages.g.swift
+
+# Example app platform folders — created by tool/verify_android.sh (flutter create)
+example/android/
+example/ios/
+example/.metadata
+example/analysis_options.yaml
+example/test/
+example/README.md
+example/.gitignore
+
+# Android
+.gradle/
+local.properties
+*.iml
+.cxx/
+.externalNativeBuild/
+captures/
+
+# iOS / Xcode
+**/Pods/
+**/xcuserdata/
+**/DerivedData/
+.swiftpm/
+*.xcworkspace/xcuserdata/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
