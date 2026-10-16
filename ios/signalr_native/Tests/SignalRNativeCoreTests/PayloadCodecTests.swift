@@ -105,9 +105,9 @@ final class PayloadCodecTests: XCTestCase {
 
         let none: Any? = nil
         XCTAssertNil(clientCast(none, as: PassthroughValue.self), "non-optional type: nil fails, the client throws")
-        XCTAssertNotNil(clientCast(none, as: PassthroughValue?.self), "optional type: nil casts")
-        XCTAssertNotNil(clientCast(none, as: String?.self))
-        XCTAssertNotNil(clientCast(none, as: Data?.self))
+        XCTAssertTrue(clientCast(none, as: PassthroughValue?.self) != nil, "optional type: nil casts")
+        XCTAssertTrue(clientCast(none, as: String?.self) != nil)
+        XCTAssertTrue(clientCast(none, as: Data?.self) != nil)
 
         // JSON protocol: the client decodes objects with the registered (Optional) type.
         let decoded: Any = try! JSONDecoder().decode(PassthroughValue?.self, from: Data(#"{"a":1}"#.utf8)) as Any
@@ -115,6 +115,6 @@ final class PayloadCodecTests: XCTestCase {
         // JSON protocol: string scalars come back as Foundation strings.
         XCTAssertEqual(clientCast("r" as NSString, as: String?.self), .some(.some("r")))
         // JSON args mode limitation: number scalars cannot become PassthroughValue.
-        XCTAssertNil(clientCast(NSNumber(value: 1), as: PassthroughValue?.self))
+        XCTAssertTrue(clientCast(NSNumber(value: 1), as: PassthroughValue?.self) == nil)
     }
 }

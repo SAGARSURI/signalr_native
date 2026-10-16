@@ -3,9 +3,10 @@ import XCTest
 
 /// Port of ReconnectControllerTest.kt: both platforms must reconnect identically.
 final class ReconnectControllerTests: XCTestCase {
-    private struct TestError: Error, CustomStringConvertible {
+    private struct TestError: LocalizedError, CustomStringConvertible {
         let description: String
         init(_ d: String) { description = d }
+        var errorDescription: String? { description }
     }
 
     /// Manual time + task queue; start() results are scripted per call.

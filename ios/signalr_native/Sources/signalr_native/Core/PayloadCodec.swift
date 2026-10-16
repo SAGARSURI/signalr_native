@@ -64,7 +64,7 @@ enum PayloadCodec {
     }
 }
 
-enum PayloadError: Error, CustomStringConvertible {
+enum PayloadError: LocalizedError, CustomStringConvertible {
     case unexpectedType(expected: String, got: Any)
     case tooManyArguments(Int, max: Int)
 
@@ -74,4 +74,6 @@ enum PayloadError: Error, CustomStringConvertible {
         case .tooManyArguments(let n, let max): return "\(n) arguments; the Swift client adapter passes at most \(max)"
         }
     }
+
+    var errorDescription: String? { description }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import SignalRClient
 
 /// What the controller drives. Callbacks may arrive on any thread; the owner re-posts them.
 protocol ManagedConnection: AnyObject {
@@ -145,7 +146,7 @@ final class ReconnectController {
     }
 }
 
-enum ReconnectError: Error, CustomStringConvertible {
+enum ReconnectError: LocalizedError, CustomStringConvertible {
     case invalidState(String)
 
     var description: String {
@@ -153,11 +154,15 @@ enum ReconnectError: Error, CustomStringConvertible {
         case .invalidState(let message): return message
         }
     }
+
+    var errorDescription: String? { description }
 }
 
-/// Human-readable message for any error, preferring CustomStringConvertible (SignalRError
-/// implements it) over Foundation's generic localizedDescription.
+/// Human-readable message for any error. SignalRError only implements CustomStringConvertible,
+/// which every Error satisfies through NSError bridging, so it is matched by type; the
+/// plugin's own errors are LocalizedErrors.
 func describeError(_ error: Error) -> String {
-    if let e = error as? CustomStringConvertible { return e.description }
-    return (error as NSError).localizedDescription
+    if let e = error as? SignalRError { return e.description }
+    if let e = error as? LocalizedError, let d = e.errorDescription { return d }
+    return error.localizedDescription
 }

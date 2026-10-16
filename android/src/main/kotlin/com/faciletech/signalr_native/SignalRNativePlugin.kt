@@ -61,7 +61,7 @@ class SignalRNativePlugin : FlutterPlugin, SignalRHostApi {
         val r = config.reconnect
         val sessionConfig = SessionConfig(
             url = config.url,
-            messagePack = config.protocol == ProtocolMsg.MESSAGE_PACK,
+            messagePack = config.hubProtocol == ProtocolMsg.MESSAGE_PACK,
             envelope = config.payloadMode == PayloadModeMsg.ENVELOPE,
             headers = config.headers,
             skipNegotiation = config.skipNegotiation,

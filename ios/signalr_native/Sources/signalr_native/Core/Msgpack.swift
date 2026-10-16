@@ -89,7 +89,7 @@ struct MsgpackWriter {
     private mutating func be64(_ v: UInt64) { withUnsafeBytes(of: v.bigEndian) { data.append(contentsOf: $0) } }
 }
 
-enum MsgpackReadError: Error, CustomStringConvertible {
+enum MsgpackReadError: LocalizedError, CustomStringConvertible {
     case truncated(at: Int)
     case invalidByte(UInt8, at: Int)
     case trailingBytes(Int)
@@ -103,6 +103,8 @@ enum MsgpackReadError: Error, CustomStringConvertible {
         case .invalidUtf8(let o): return "Invalid UTF-8 string at byte \(o)"
         }
     }
+
+    var errorDescription: String? { description }
 }
 
 /// MessagePack reader for outbound arguments: Dart sends one MessagePack value per argument,

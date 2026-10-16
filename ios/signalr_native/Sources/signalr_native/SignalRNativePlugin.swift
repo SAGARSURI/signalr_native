@@ -41,7 +41,7 @@ public final class SignalRNativePlugin: NSObject, FlutterPlugin, SignalRHostApi 
         let r = config.reconnect
         let sessionConfig = SessionConfig(
             url: config.url,
-            messagePack: config.protocol == .messagePack,
+            messagePack: config.hubProtocol == .messagePack,
             envelope: config.payloadMode == .envelope,
             headers: config.headers,
             skipNegotiation: config.skipNegotiation,

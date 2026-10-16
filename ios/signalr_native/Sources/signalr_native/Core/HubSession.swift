@@ -86,14 +86,16 @@ final class HubSession {
         let envelope = config.envelope
         let logLevel = config.logLevel
         let closed = ClosedForwarder()
+        // Built outside the Task so it does not hold the host strongly.
+        let onClosed: (Error?) async -> Void = { [weak host] error in
+            host?.postToMain { closed.controller?.onConnectionClosed(error) }
+        }
+        let log: @Sendable (String) -> Void = { [weak host] message in
+            guard HubSession.warning >= logLevel, let host else { return }
+            host.postToMain { host.onLog(level: HubSession.warning, message: message, traceId: nil) }
+        }
         let registration = Task {
-            await connection.onClosed { [weak host] error in
-                host?.postToMain { closed.controller?.onConnectionClosed(error) }
-            }
-            let log: @Sendable (String) -> Void = { [weak host] message in
-                guard HubSession.warning >= logLevel, let host else { return }
-                host.postToMain { host.onLog(level: HubSession.warning, message: message, traceId: nil) }
-            }
+            await connection.onClosed(handler: onClosed)
             switch codec {
             case .jsonArgs, .msgpackArgs:
                 await HubSession.register(PassthroughValue.self, on: connection, methods: methods, arities: arities,
@@ -298,7 +300,7 @@ final class HubSession {
                 }
                 if active.isCancelled { return }
                 plane.add(.streamEnd(streamId: streamId, receivedAtMicros: Clock.nowMicros(), error: end))
-                self.host.postToMain { [weak self] in self?.streams.removeValue(forKey: streamId) }
+                self.host.postToMain { _ = self.streams.removeValue(forKey: streamId) }
             }
             let sent = Clock.nowMicros()
             host.postToMain { [self] in
