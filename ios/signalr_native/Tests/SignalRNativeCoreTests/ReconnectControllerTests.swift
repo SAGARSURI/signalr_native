@@ -156,6 +156,22 @@ final class ReconnectControllerTests: XCTestCase {
         h.pendingStart!(nil) // late success must not resurrect the connection
         XCTAssertEqual(h.states.last, "DISCONNECTED")
         XCTAssertFalse(h.controller.isConnected)
+        XCTAssertEqual(h.stopCalls, 2, "the late success is closed again")
+    }
+
+    func testStartThatSucceedsAfterStopFinishedIsClosed() {
+        let h = Harness(standard)
+        var error: Error?
+        h.controller.start { error = $0 }
+        var stopped = false
+        h.controller.stop { stopped = true }
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(h.stopCalls, 1)
+        h.pendingStart!(nil) // the start won the race inside the client
+        XCTAssertEqual(h.stopCalls, 2, "the late success is closed again")
+        XCTAssertNotNil(error)
+        XCTAssertEqual(h.states, ["CONNECTING", "DISCONNECTED"])
+        XCTAssertFalse(h.controller.isConnected)
     }
 
     func testFailedInitialStartDoesNotEnterReconnect() {

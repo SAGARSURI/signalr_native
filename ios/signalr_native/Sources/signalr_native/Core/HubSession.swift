@@ -11,7 +11,8 @@ struct SessionConfig {
     let hasAccessTokenProvider: Bool
     let serverTimeoutMs: Int64
     let keepAliveIntervalMs: Int64
-    /// Not configurable on the Swift client (it has no handshake timeout); kept for parity.
+    /// The Swift client has no handshake timeout, so the adapter applies this to the whole
+    /// start (token, WebSocket connect and handshake) and aborts the start when it expires.
     let handshakeTimeoutMs: Int64
     let reconnect: ReconnectPolicy
     let serverMethods: [String]
@@ -63,8 +64,12 @@ final class HubSession {
     private let connection: HubConnection
     private let client: ClientConnection
     private var controller: ReconnectController!
+    private let outbound = OutboundQueue()
     private var streams: [Int64: ActiveStream] = [:]
-    private var cancelledBeforeStart: Set<Int64> = []
+    /// Invokes waiting for their completion. The Swift client never fails these when the
+    /// connection closes, so the session does it when the controller leaves Connected.
+    private var pendingInvokes: [Int: (start: Int64, callback: (CallResult) -> Void)] = [:]
+    private var nextInvokeId = 0
 
     init(handle: Int64, config: SessionConfig, host: SessionHost) {
         self.handle = handle
@@ -108,7 +113,8 @@ final class HubSession {
                                           envelope: envelope, codec: codec, plane: dataPlane, log: log)
             }
         }
-        client = ClientConnection(connection: connection, ready: registration, host: host)
+        client = ClientConnection(connection: connection, ready: registration, host: host,
+                                  timeoutMs: config.handshakeTimeoutMs)
 
         controller = ReconnectController(
             connection: client,
@@ -118,6 +124,7 @@ final class HubSession {
                 guard let self else { return }
                 let level = kind == .disconnected && error != nil ? HubSession.warning : HubSession.info
                 self.log(level, "State \(kind.rawValue)\(attempt > 0 ? " #\(attempt)" : "")\(error.map { ": \($0)" } ?? "")", nil)
+                if kind == .reconnecting || kind == .disconnected { self.failInFlight(error) }
                 self.host.onState(kind: kind, connectionId: id, attempt: attempt, error: error)
             }
         )
@@ -129,8 +136,7 @@ final class HubSession {
     func stop(_ callback: @escaping () -> Void) { controller.stop(callback) }
 
     func dispose(_ callback: @escaping () -> Void) {
-        for (_, s) in streams { s.cancel() }
-        streams.removeAll()
+        failInFlight(nil)
         controller.stop(callback)
     }
 
@@ -139,7 +145,8 @@ final class HubSession {
         log(HubSession.debug, "send \(method) (\(args.count) args)", traceId)
         guard let decoded = prepare(args, start: start, traceId: traceId, callback: callback) else { return }
         let connection = self.connection
-        Task {
+        // Awaited in the queue: a send completes once written, so the next call goes out after it.
+        outbound.enqueue { [self] in
             do {
                 try await VariadicCalls.send(connection, method, decoded)
                 let end = Clock.nowMicros()
@@ -156,26 +163,39 @@ final class HubSession {
         guard let decoded = prepare(args, start: start, traceId: traceId, callback: callback) else { return }
         let connection = self.connection
         let codec = self.codec
-        Task {
-            do {
-                // Optional return types: the client's typed invoke throws for a nil result
-                // unless the requested type itself is Optional.
-                let bytes: Data?
-                switch codec {
-                case .jsonArgs, .msgpackArgs:
-                    let r: PassthroughValue? = try await VariadicCalls.invoke(connection, method, decoded)
-                    bytes = try r.map { try codec.toBytes($0) }
-                case .jsonEnvelope:
-                    let r: String? = try await VariadicCalls.invoke(connection, method, decoded)
-                    bytes = r.map { Data($0.utf8) }
-                case .msgpackEnvelope:
-                    let r: Data? = try await VariadicCalls.invoke(connection, method, decoded)
-                    bytes = r
+        let id = nextInvokeId
+        nextInvokeId += 1
+        pendingInvokes[id] = (start, callback)
+        // Started in order but not awaited by the queue: an invoke only returns with its result.
+        outbound.enqueue { [self] in
+            Task {
+                do {
+                    // Optional return types: the client's typed invoke throws for a nil result
+                    // unless the requested type itself is Optional.
+                    let bytes: Data?
+                    switch codec {
+                    case .jsonArgs, .msgpackArgs:
+                        let r: PassthroughValue? = try await VariadicCalls.invoke(connection, method, decoded)
+                        bytes = try r.map { try codec.toBytes($0) }
+                    case .jsonEnvelope:
+                        let r: String? = try await VariadicCalls.invoke(connection, method, decoded)
+                        bytes = r.map { Data($0.utf8) }
+                    case .msgpackEnvelope:
+                        let r: Data? = try await VariadicCalls.invoke(connection, method, decoded)
+                        bytes = r
+                    }
+                    let end = Clock.nowMicros()
+                    host.postToMain { [self] in
+                        pendingInvokes.removeValue(forKey: id)?.callback(
+                            CallResult(result: bytes, nativeStartMicros: start, nativeEndMicros: end))
+                    }
+                } catch {
+                    host.postToMain { [self] in
+                        // Gone when the connection was lost first: the caller already has its error.
+                        guard let pending = pendingInvokes.removeValue(forKey: id) else { return }
+                        pending.callback(failure(error, start: start, traceId: traceId))
+                    }
                 }
-                let end = Clock.nowMicros()
-                host.postToMain { callback(CallResult(result: bytes, nativeStartMicros: start, nativeEndMicros: end)) }
-            } catch {
-                host.postToMain { [self] in callback(failure(error, start: start, traceId: traceId)) }
             }
         }
     }
@@ -199,12 +219,25 @@ final class HubSession {
     }
 
     func streamCancel(streamId: Int64) {
-        if let s = streams.removeValue(forKey: streamId) {
-            s.cancel()
-        } else {
-            // The cancel can overtake the stream's own registration (see runStream).
-            cancelledBeforeStart.insert(streamId)
+        // Missing when the stream already ended or the connection was lost.
+        streams.removeValue(forKey: streamId)?.cancel()
+    }
+
+    /// The connection is gone (reconnecting, stopped or disposed): completes every pending
+    /// invoke with notConnected and ends every native stream. Dart fails its own stream
+    /// subscriptions on the same state change. Main thread.
+    private func failInFlight(_ reason: String?) {
+        let message = "Connection lost" + (reason.map { ": \($0)" } ?? "")
+        let invokes = pendingInvokes.sorted { $0.key < $1.key }
+        pendingInvokes.removeAll()
+        let end = Clock.nowMicros()
+        for (_, pending) in invokes {
+            pending.callback(CallResult(result: nil, nativeStartMicros: pending.start, nativeEndMicros: end,
+                                        errorKind: "notConnected", errorMessage: message))
         }
+        let active = streams
+        streams.removeAll()
+        for (_, s) in active { s.cancel() }
     }
 
     // ------------------------------------------------------------------------------------
@@ -278,15 +311,25 @@ final class HubSession {
         let connection = self.connection
         let codec = self.codec
         let plane = self.dataPlane
-        Task {
+        // Registered before anything runs, so a cancel or a lost connection always finds it.
+        let active = ActiveStream()
+        streams[streamId] = active
+        let unregister = { [self] in
+            if streams[streamId] === active { streams.removeValue(forKey: streamId) }
+        }
+        // Awaited in the queue: stream() returns once the StreamInvocation is written.
+        outbound.enqueue { [self] in
             let result: any StreamResult<E>
             do {
                 result = try await VariadicCalls.stream(connection, method, args)
             } catch {
-                host.postToMain { [self] in callback(failure(error, start: start, traceId: traceId)) }
+                host.postToMain { [self] in
+                    unregister()
+                    callback(failure(error, start: start, traceId: traceId))
+                }
                 return
             }
-            let active = ActiveStream(result: result)
+            active.attach(result)
             Task {
                 var end: String?
                 do {
@@ -300,17 +343,10 @@ final class HubSession {
                 }
                 if active.isCancelled { return }
                 plane.add(.streamEnd(streamId: streamId, receivedAtMicros: Clock.nowMicros(), error: end))
-                self.host.postToMain { _ = self.streams.removeValue(forKey: streamId) }
+                self.host.postToMain(unregister)
             }
             let sent = Clock.nowMicros()
-            host.postToMain { [self] in
-                if cancelledBeforeStart.remove(streamId) != nil {
-                    active.cancel()
-                } else {
-                    streams[streamId] = active
-                }
-                callback(CallResult(result: nil, nativeStartMicros: start, nativeEndMicros: sent))
-            }
+            host.postToMain { callback(CallResult(result: nil, nativeStartMicros: start, nativeEndMicros: sent)) }
         }
     }
 
@@ -360,38 +396,126 @@ final class HubSession {
 }
 
 /// Adapts the Swift client to the controller. Results are re-posted to the main thread.
+///
+/// The client ignores stop() until a start has reached it, and start and stop run as separate
+/// Tasks, so a stop can overtake the start it should cancel. Each start therefore gets a
+/// `StartAttempt`: stop() (or the start timeout) aborts it, and a start that still succeeds
+/// after being aborted closes itself and reports the abort. A start waits for every earlier
+/// start and stop; a stop runs at once so it can abort a start that is in progress.
 private final class ClientConnection: ManagedConnection {
     private let connection: HubConnection
-    private let ready: Task<Void, Never>
     private let host: SessionHost
+    private let timeoutMs: Int64
+    /// The last start or stop; the next start runs after it. Main thread.
+    private var lastOp: Task<Void, Never>
+    private var current: StartAttempt?
 
-    init(connection: HubConnection, ready: Task<Void, Never>, host: SessionHost) {
+    init(connection: HubConnection, ready: Task<Void, Never>, host: SessionHost, timeoutMs: Int64) {
         self.connection = connection
-        self.ready = ready
         self.host = host
+        self.timeoutMs = timeoutMs
+        lastOp = ready
     }
 
     func start(onResult: @escaping (Error?) -> Void) {
-        Task { [connection, ready, host] in
-            await ready.value
+        let attempt = StartAttempt()
+        current = attempt
+        let previous = lastOp
+        let connection = self.connection
+        let host = self.host
+        if timeoutMs > 0 {
+            let seconds = Double(timeoutMs) / 1000
+            let timer = host.schedule(delayMs: timeoutMs) { [weak self] in
+                // The client has no handshake timeout; stopping it rejects the pending handshake.
+                if attempt.abort(ReconnectError.invalidState("Start timed out after \(seconds) s")) {
+                    self?.stopClient(then: nil)
+                }
+            }
+            attempt.onFinish = { timer.cancel() }
+        }
+        lastOp = Task {
+            await previous.value
+            if let aborted = attempt.abortedError {
+                attempt.finish()
+                host.postToMain { onResult(aborted) }
+                return
+            }
             do {
                 try await connection.start()
-                host.postToMain { onResult(nil) }
+                if attempt.finish() {
+                    host.postToMain { onResult(nil) }
+                } else {
+                    // Aborted while the client was starting and the abort's stop came too early.
+                    await connection.stop()
+                    host.postToMain { onResult(attempt.abortedError) }
+                }
             } catch {
-                host.postToMain { onResult(error) }
+                attempt.finish()
+                let reported = attempt.abortedError ?? error
+                host.postToMain { onResult(reported) }
             }
         }
     }
 
     func stop(onDone: @escaping () -> Void) {
-        Task { [connection, host] in
+        current?.abort(ReconnectError.invalidState("Stopped while connecting"))
+        current = nil
+        stopClient(then: onDone)
+    }
+
+    private func stopClient(then onDone: (() -> Void)?) {
+        let stop = Task { [connection, host] in
             await connection.stop()
-            host.postToMain(onDone)
+            if let onDone { host.postToMain(onDone) }
+        }
+        let previous = lastOp
+        lastOp = Task {
+            await previous.value
+            await stop.value
         }
     }
 
     /// The Swift client does not expose the connection id.
     func connectionId() -> String? { nil }
+}
+
+/// One start of the client: either it finishes or it is aborted first, never both.
+private final class StartAttempt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+    private var aborted: Error?
+    /// Set on the main thread before the start runs; called once when the attempt settles.
+    var onFinish: (() -> Void)?
+
+    var abortedError: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return aborted
+    }
+
+    /// Returns false when the attempt was aborted first.
+    @discardableResult
+    func finish() -> Bool {
+        lock.lock()
+        let settled = finished || aborted != nil
+        finished = true
+        let done = settled ? nil : onFinish
+        lock.unlock()
+        done?()
+        return !settled
+    }
+
+    /// Returns false when the attempt already finished or was aborted.
+    @discardableResult
+    func abort(_ error: Error) -> Bool {
+        lock.lock()
+        let settled = finished || aborted != nil
+        if !settled { aborted = error }
+        let done = settled ? nil : onFinish
+        lock.unlock()
+        done?()
+        return !settled
+    }
 }
 
 /// Lets the onClosed handler, registered before the controller exists, reach it. Main thread.
@@ -409,15 +533,12 @@ private struct HostScheduler: Scheduler {
     func nowMs() -> Int64 { Clock.nowMicros() / 1000 }
 }
 
-/// A running server-to-client stream; `cancel` stops delivery and tells the server.
+/// A server-to-client stream. Registered before the client call starts; `attach` hands it
+/// the client's stream, and `cancel` (before or after that) stops delivery and tells the server.
 private final class ActiveStream: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
-    private let cancelResult: () async -> Void
-
-    init<E>(result: any StreamResult<E>) {
-        cancelResult = { await result.cancel() }
-    }
+    private var cancelResult: (() async -> Void)?
 
     var isCancelled: Bool {
         lock.lock()
@@ -425,13 +546,24 @@ private final class ActiveStream: @unchecked Sendable {
         return cancelled
     }
 
+    func attach<E>(_ result: any StreamResult<E>) {
+        let cancelResult: () async -> Void = { await result.cancel() }
+        lock.lock()
+        let alreadyCancelled = cancelled
+        if !alreadyCancelled { self.cancelResult = cancelResult }
+        lock.unlock()
+        if alreadyCancelled { Task { await cancelResult() } }
+    }
+
+    /// Also ends the client's stream: its cancel finishes the iterator with an error.
     func cancel() {
         lock.lock()
         let first = !cancelled
         cancelled = true
-        lock.unlock()
-        guard first else { return }
         let cancelResult = self.cancelResult
+        self.cancelResult = nil
+        lock.unlock()
+        guard first, let cancelResult else { return }
         Task { await cancelResult() }
     }
 }

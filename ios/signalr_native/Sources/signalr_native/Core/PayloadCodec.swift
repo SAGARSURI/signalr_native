@@ -23,12 +23,17 @@ enum PayloadCodec {
         }
     }
 
+    // One coder for every message instead of one per argument; encode/decode keep no state
+    // between calls, so sharing them across threads is safe.
+    private static let jsonEncoder = JSONEncoder()
+    private static let jsonDecoder = JSONDecoder()
+
     /// Bytes for Dart from a value the client produced (an argument, stream item or result).
     func toBytes(_ value: Any?) throws -> Data {
         switch self {
         case .jsonArgs:
             guard let value, !(value is NSNull) else { return Data("null".utf8) }
-            if let v = value as? PassthroughValue { return try JSONEncoder().encode(v) }
+            if let v = value as? PassthroughValue { return try PayloadCodec.jsonEncoder.encode(v) }
             // Scalars the client did not run through Decodable.
             return try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
         case .jsonEnvelope:
@@ -56,7 +61,7 @@ enum PayloadCodec {
     /// Client argument from the bytes Dart sent for one outbound argument.
     func fromBytes(_ data: Data) throws -> Any {
         switch self {
-        case .jsonArgs: return try JSONDecoder().decode(PassthroughValue.self, from: data)
+        case .jsonArgs: return try PayloadCodec.jsonDecoder.decode(PassthroughValue.self, from: data)
         case .jsonEnvelope: return String(decoding: data, as: UTF8.self)
         case .msgpackArgs: return try MsgpackReader.read(data)
         case .msgpackEnvelope: return data

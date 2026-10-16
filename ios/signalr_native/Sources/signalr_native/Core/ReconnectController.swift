@@ -65,7 +65,9 @@ final class ReconnectController {
         sink(.connecting, nil, 0, nil)
         connection.start { [self] error in
             if phase != .starting {
-                // stop() was called while connecting.
+                // stop() was called while connecting. If its stop already finished and this
+                // start still succeeded, nothing else would close the socket.
+                if error == nil && phase == .stopped { connection.stop {} }
                 callback(error ?? ReconnectError.invalidState("Stopped while connecting"))
                 return
             }
@@ -130,7 +132,11 @@ final class ReconnectController {
         attemptInFlight = true
         connection.start { [self] error in
             attemptInFlight = false
-            guard phase == .reconnecting else { return }
+            guard phase == .reconnecting else {
+                // stop() during the attempt: same late-success case as in start().
+                if error == nil && phase == .stopped { connection.stop {} }
+                return
+            }
             if let error {
                 retryCount += 1
                 scheduleNext(error)

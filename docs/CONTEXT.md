@@ -47,6 +47,10 @@ Required now (args mode):
 - **One object argument per method** — iOS JSON args mode cannot pass scalar arguments through (they bypass Decodable).
 - **Exact prices as strings or scaled integers** — iOS JSON parses numbers to `Double` (`123456789.123456789123` → `123456789.12345679`).
 - Invoke results in args mode on iOS JSON must be objects/arrays or null (scalar results can't be captured).
+- **No `null` arguments** in iOS JSON args mode: the Swift client hands the handler `NSNull`, the cast fails and the message is dropped.
+- iOS JSON args mode re-encodes payloads: number text and object key order can change (`100.0` → `100`); Android keeps the original text. Envelope mode is byte-exact on both.
+- iOS MessagePack: **map keys must be strings** (integer keys throw in the client and drop the whole frame; a dropped completion leaves its invoke waiting for `invokeTimeout`).
+- Envelope mode: every result/argument must really be a string (JSON) or `bin` (MessagePack); anything else drops the frame on iOS.
 
 When switching to envelope:
 - Every method sends/returns **one** argument: `JsonSerializer.Serialize(payload)` (JSON protocol) or `byte[]` (MessagePack).
@@ -176,7 +180,8 @@ Transfer gotcha: when files are pushed to the Mac from a Claude cloud session, o
 - [x] **M1** Dart API, Pigeon schema, data-plane codec, 31 tests — analyze clean, all green.
 - [x] **M2** Android adapter — `HubSession`, codecs, `NullResultProtocol`, reconnect loop, data plane, plugin glue (Pigeon 29 generates Kotlin `suspend` host APIs; the plugin hops to `Dispatchers.Main`). Debug APK builds, 16 Kotlin tests green. Plugin build file comes from `flutter create --template=plugin` (AGP 9.1, Kotlin 2.4, minSdk 24) + `signalr-deps.gradle`.
 - [x] **M3** iOS adapter — `HubSession` on the Swift client (pinned to commit 3938376 for the MessagePack UTF-8 fix), `PassthroughValue` + own `MsgpackWriter`/`MsgpackReader` (the client's are internal), `String`/`Data` for envelope, port of `ReconnectController`, `FrameWriter.swift` + `DataPlane`, log bridge, invoke asks for Optional result types so void/null results don't throw. **SPM only** (the client has no CocoaPods spec; Flutter 3.47 defaults to SPM); iOS 15+. `tool/verify_ios.sh` unit-tests the Flutter-free `Core/` from a throwaway package (26 tests), then builds the example for the simulator. Pigeon field `protocol` renamed `hubProtocol` (Swift keyword).
-- iOS gaps vs Android: no connection id (not exposed), no handshake timeout (no setting), JSON args mode can't carry scalar args/results/stream items, a null stream item crashes the client's JSON path.
+- iOS gaps vs Android: no connection id (not exposed); `handshakeTimeout` bounds the whole start (token + connect + handshake) because the client has no handshake timeout; JSON args mode can't carry scalar or null args/results/stream items; a null stream item crashes the client (JSON args and envelope); an invoke is not ordered against calls made right after it (sends and stream starts are); stream items can reach Dart after invocations that arrived later; a server close reason is not passed on; if negotiate returns an access token (Azure SignalR redirect) the client keeps that token for every reconnect.
+- PR #1 review fixes (iOS): in-flight invokes fail with notConnected and native streams end when the connection drops (the client never fails them); start/stop race closed (a start aborted by stop or timeout closes itself, starts wait for earlier stops); outbound sends/stream starts go through one ordered queue; one shared JSON coder. Both controllers close a start that succeeds after stop finished.
 - [ ] **M4** Example + local ASP.NET Core bench hub; spike (b) on-device latency vs the current Dart SignalR client; spike (c) chaos: airplane mode, server restart, token expiry mid-retry.
 
 Open items:
