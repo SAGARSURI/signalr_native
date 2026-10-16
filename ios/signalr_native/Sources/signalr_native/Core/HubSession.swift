@@ -66,7 +66,7 @@ final class HubSession {
     private let host: SessionHost
     private let codec: PayloadCodec
     private let dataPlane: DataPlane
-    private let client: ClientConnection
+    private let client: ClientConnection<HubConnection>
     private var controller: ReconnectController!
     /// Ordered queue for the live connection; a new connection gets a new queue so a write
     /// stuck on a dead socket can't hold up the next one.
@@ -99,7 +99,7 @@ final class HubSession {
             guard HubSession.warning >= logLevel, let host else { return }
             host.postToMain { host.onLog(level: HubSession.warning, message: message, traceId: nil) }
         }
-        let build: () async -> HubConnection = { [weak host] in
+        let build: (LiveFlag) async -> HubConnection = { [weak host] live in
             let connection = HubSession.buildConnection(config: config, host: host)
             // Weak: the connection keeps its handlers alive.
             await connection.onClosed { [weak host, weak connection] error in
@@ -110,17 +110,20 @@ final class HubSession {
             switch codec {
             case .jsonArgs, .msgpackArgs:
                 await HubSession.register(PassthroughValue.self, on: connection, methods: methods, arities: arities,
-                                          envelope: envelope, codec: codec, plane: dataPlane, log: log)
+                                          envelope: envelope, codec: codec, plane: dataPlane, live: live, log: log)
             case .jsonEnvelope:
                 await HubSession.register(String.self, on: connection, methods: methods, arities: arities,
-                                          envelope: envelope, codec: codec, plane: dataPlane, log: log)
+                                          envelope: envelope, codec: codec, plane: dataPlane, live: live, log: log)
             case .msgpackEnvelope:
                 await HubSession.register(Data.self, on: connection, methods: methods, arities: arities,
-                                          envelope: envelope, codec: codec, plane: dataPlane, log: log)
+                                          envelope: envelope, codec: codec, plane: dataPlane, live: live, log: log)
             }
             return connection
         }
-        client = ClientConnection(build: build, host: host, timeoutMs: config.handshakeTimeoutMs)
+        client = ClientConnection(build: build,
+                                  postToMain: { [weak host] task in host?.postToMain(task) },
+                                  schedule: { [host] delayMs, task in host.schedule(delayMs: delayMs, task: task) },
+                                  timeoutMs: config.handshakeTimeoutMs)
 
         controller = ReconnectController(
             connection: client,
@@ -261,7 +264,14 @@ final class HubSession {
         options.logHandler = logHandler
         if config.hasAccessTokenProvider {
             // A fresh connection per start, so every reconnect asks Dart for a fresh token.
-            options.accessTokenFactory = { [weak host] in try await host?.requestAccessToken() }
+            // Bounded: the client's stop waits for a pending token fetch, so a Dart provider
+            // that never answers would keep every timed-out attempt's connection alive.
+            let timeoutMs = config.handshakeTimeoutMs > 0 ? config.handshakeTimeoutMs : 60_000
+            options.accessTokenFactory = { [weak host] in
+                try await withTimeout(ms: timeoutMs, "Access token provider did not answer") {
+                    try await host?.requestAccessToken()
+                }
+            }
         }
 
         var builder = HubConnectionBuilder()
@@ -280,10 +290,11 @@ final class HubSession {
     /// convert arguments to bytes and hand them to the data plane, nothing else.
     private static func register<T>(_ type: T.Type, on c: HubConnection, methods: [String], arities: [Int],
                                     envelope: Bool, codec: PayloadCodec, plane: DataPlane,
-                                    log: @escaping @Sendable (String) -> Void) async {
+                                    live: LiveFlag, log: @escaping @Sendable (String) -> Void) async {
         for (index, name) in methods.enumerated() {
             let arity = envelope ? 1 : arities[index]
             let emit: ([Any?]) -> Void = { values in
+                guard live.isOn else { return }
                 let received = Clock.nowMicros()
                 do {
                     let args = try values.map { try codec.toBytes($0) }
@@ -405,173 +416,9 @@ final class HubSession {
     }
 }
 
-/// Adapts the Swift client to the controller. Results are re-posted to the main thread.
-///
-/// Each start builds a new HubConnection (see HubSession), so starts never wait for each
-/// other. The client ignores stop() until a start has reached it, and only rejects the
-/// handshake wait (not a token fetch, negotiate or connect) when stopped mid-start. So each
-/// start is a `StartAttempt` that stop() or the start timeout can abort: the abort reports
-/// at once and closes the attempt's connection in the background, and a start that still
-/// succeeds afterwards closes itself.
-private final class ClientConnection: ManagedConnection {
-    private let build: () async -> HubConnection
-    private let host: SessionHost
-    private let timeoutMs: Int64
-    /// Receives closes of the live connection. Main thread.
-    var onClosed: ((Error?) -> Void)?
-    /// The latest start; its connection is the one stop() closes. Main thread.
-    private var latest: StartAttempt?
-    /// The connection of the last successful start. Main thread.
-    private(set) var current: HubConnection?
-
-    init(build: @escaping () async -> HubConnection, host: SessionHost, timeoutMs: Int64) {
-        self.build = build
-        self.host = host
-        self.timeoutMs = timeoutMs
-    }
-
-    func start(onResult: @escaping (Error?) -> Void) {
-        let attempt = StartAttempt(onResult: onResult)
-        latest = attempt
-        let build = self.build
-        let host = self.host
-        if timeoutMs > 0 {
-            let seconds = Double(timeoutMs) / 1000
-            let timer = host.schedule(delayMs: timeoutMs) { [weak self] in
-                self?.abort(attempt, ReconnectError.invalidState("Start timed out after \(seconds) s"))
-            }
-            attempt.onFinish = { timer.cancel() }
-        }
-        Task { [weak self] in
-            let connection = await build()
-            // Aborted before the connection existed: already reported, never started.
-            guard attempt.bind(connection) else { return }
-            do {
-                try await connection.start()
-                if attempt.finish() {
-                    host.postToMain { self?.connected(attempt, connection) }
-                } else {
-                    // Aborted (and reported) while starting, and the abort's stop came too early.
-                    await connection.stop()
-                }
-            } catch {
-                if attempt.finish() { host.postToMain { attempt.report(error) } }
-            }
-        }
-    }
-
-    func stop(onDone: @escaping () -> Void) {
-        guard let attempt = latest else { return onDone() }
-        // A start in progress: it reports now, and its connection closes in the background
-        // (the client's stop waits for a pending token fetch, negotiate or connect).
-        if abort(attempt, ReconnectError.invalidState("Stopped while connecting")) { return onDone() }
-        guard let connection = attempt.connection else { return onDone() }
-        Task { [host] in
-            await connection.stop()
-            host.postToMain(onDone)
-        }
-    }
-
-    /// A connection's onClosed. Main thread.
-    func connectionClosed(_ connection: HubConnection, _ error: Error?) {
-        if connection === current {
-            onClosed?(error)
-        } else if let attempt = latest, attempt.connection === connection {
-            // The client fires onClosed as soon as its start succeeded, so a server that closes
-            // right after the handshake can beat the success post; replay it after that.
-            attempt.earlyClose = EarlyClose(error: error)
-        }
-    }
-
-    /// The Swift client does not expose the connection id.
-    func connectionId() -> String? { nil }
-
-    /// Main thread.
-    private func connected(_ attempt: StartAttempt, _ connection: HubConnection) {
-        current = connection
-        attempt.report(nil)
-        if let early = attempt.earlyClose { onClosed?(early.error) }
-    }
-
-    /// Aborts a start that has not settled: reports `error` and closes its connection, if it
-    /// has one yet, in the background. False when the attempt already settled. Main thread.
-    @discardableResult
-    private func abort(_ attempt: StartAttempt, _ error: Error) -> Bool {
-        guard attempt.abort() else { return false }
-        attempt.report(error)
-        if let connection = attempt.connection { Task { await connection.stop() } }
-        return true
-    }
-}
-
-private struct EarlyClose {
-    let error: Error?
-}
-
-/// One start of the client: it either finishes or is aborted first, never both.
-private final class StartAttempt: @unchecked Sendable {
-    private let lock = NSLock()
-    private var finished = false
-    private var aborted = false
-    private var boundConnection: HubConnection?
-    /// Set on the main thread before the start runs; called once when the attempt settles.
-    var onFinish: (() -> Void)?
-    /// Main thread only.
-    private var onResult: ((Error?) -> Void)?
-    /// Main thread only. A close of this attempt's connection seen before its success.
-    var earlyClose: EarlyClose?
-
-    init(onResult: @escaping (Error?) -> Void) {
-        self.onResult = onResult
-    }
-
-    /// Delivers the attempt's result once; later reports are dropped. Main thread.
-    func report(_ error: Error?) {
-        let onResult = self.onResult
-        self.onResult = nil
-        onResult?(error)
-    }
-
-    var connection: HubConnection? {
-        lock.lock()
-        defer { lock.unlock() }
-        return boundConnection
-    }
-
-    /// Records the connection this attempt starts; false when it was aborted first, in which
-    /// case the connection is never started.
-    func bind(_ connection: HubConnection) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !aborted else { return false }
-        boundConnection = connection
-        return true
-    }
-
-    /// Returns false when the attempt was aborted first.
-    func finish() -> Bool {
-        settle { finished = true }
-    }
-
-    /// Returns false when the attempt already finished or was aborted.
-    func abort() -> Bool {
-        settle { aborted = true }
-    }
-
-    private func settle(_ mark: () -> Void) -> Bool {
-        lock.lock()
-        let settled = finished || aborted
-        if !settled { mark() }
-        let done = settled ? nil : onFinish
-        lock.unlock()
-        done?()
-        return !settled
-    }
-}
-
 /// Lets onClosed handlers, registered before the client exists, reach it. Main thread.
 private final class ClosedForwarder: @unchecked Sendable {
-    weak var client: ClientConnection?
+    weak var client: ClientConnection<HubConnection>?
 }
 
 private struct HostScheduler: Scheduler {
