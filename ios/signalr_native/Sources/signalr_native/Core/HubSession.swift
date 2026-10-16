@@ -68,7 +68,10 @@ final class HubSession {
     private let dataPlane: DataPlane
     private let client: ClientConnection
     private var controller: ReconnectController!
-    private let outbound = OutboundQueue()
+    /// Ordered queue for the live connection; a new connection gets a new queue so a write
+    /// stuck on a dead socket can't hold up the next one.
+    private var outbound = OutboundQueue()
+    private weak var outboundConnection: HubConnection?
     private var streams: [Int64: ActiveStream] = [:]
     /// Invokes waiting for their completion. The Swift client never fails these when the
     /// connection closes, so the session does it when the controller leaves Connected.
@@ -100,7 +103,9 @@ final class HubSession {
             let connection = HubSession.buildConnection(config: config, host: host)
             // Weak: the connection keeps its handlers alive.
             await connection.onClosed { [weak host, weak connection] error in
-                host?.postToMain { closed.connectionClosed(connection, error) }
+                host?.postToMain {
+                    if let connection { closed.client?.connectionClosed(connection, error) }
+                }
             }
             switch codec {
             case .jsonArgs, .msgpackArgs:
@@ -129,7 +134,7 @@ final class HubSession {
                 self.host.onState(kind: kind, connectionId: id, attempt: attempt, error: error)
             }
         )
-        closed.controller = controller
+        client.onClosed = { [weak self] error in self?.controller.onConnectionClosed(error) }
         closed.client = client
     }
 
@@ -359,6 +364,10 @@ final class HubSession {
                                 errorKind: "notConnected", errorMessage: "Not connected"))
             return nil
         }
+        if outboundConnection !== connection {
+            outbound = OutboundQueue()
+            outboundConnection = connection
+        }
         do {
             return (connection, try args.map { try codec.fromBytes($0) })
         } catch {
@@ -398,18 +407,18 @@ final class HubSession {
 
 /// Adapts the Swift client to the controller. Results are re-posted to the main thread.
 ///
-/// Each start builds a new HubConnection (see HubSession). The client ignores stop() until a
-/// start has reached it, and start and stop run as separate Tasks, so a stop can overtake the
-/// start it should cancel. Each start therefore gets a `StartAttempt`: stop() (or the start
-/// timeout) aborts it, and a start that still succeeds after being aborted closes itself and
-/// reports the abort. A start waits for every earlier start and stop; a stop runs at once so
-/// it can abort a start that is in progress.
+/// Each start builds a new HubConnection (see HubSession), so starts never wait for each
+/// other. The client ignores stop() until a start has reached it, and only rejects the
+/// handshake wait (not a token fetch, negotiate or connect) when stopped mid-start. So each
+/// start is a `StartAttempt` that stop() or the start timeout can abort: the abort reports
+/// at once and closes the attempt's connection in the background, and a start that still
+/// succeeds afterwards closes itself.
 private final class ClientConnection: ManagedConnection {
     private let build: () async -> HubConnection
     private let host: SessionHost
     private let timeoutMs: Int64
-    /// The last start or stop; the next start runs after it. Main thread.
-    private var lastOp: Task<Void, Never>?
+    /// Receives closes of the live connection. Main thread.
+    var onClosed: ((Error?) -> Void)?
     /// The latest start; its connection is the one stop() closes. Main thread.
     private var latest: StartAttempt?
     /// The connection of the last successful start. Main thread.
@@ -422,89 +431,105 @@ private final class ClientConnection: ManagedConnection {
     }
 
     func start(onResult: @escaping (Error?) -> Void) {
-        let attempt = StartAttempt()
+        let attempt = StartAttempt(onResult: onResult)
         latest = attempt
-        let previous = lastOp
         let build = self.build
         let host = self.host
         if timeoutMs > 0 {
             let seconds = Double(timeoutMs) / 1000
             let timer = host.schedule(delayMs: timeoutMs) { [weak self] in
-                // The client has no handshake timeout; stopping it rejects the pending handshake.
-                if attempt.abort(ReconnectError.invalidState("Start timed out after \(seconds) s")) {
-                    self?.stopClient(attempt, then: nil)
-                }
+                self?.abort(attempt, ReconnectError.invalidState("Start timed out after \(seconds) s"))
             }
             attempt.onFinish = { timer.cancel() }
         }
-        lastOp = Task {
-            await previous?.value
-            if let aborted = attempt.abortedError {
-                attempt.finish()
-                host.postToMain { onResult(aborted) }
-                return
-            }
+        Task { [weak self] in
             let connection = await build()
-            guard attempt.bind(connection) else {
-                host.postToMain { onResult(attempt.abortedError) }
-                return
-            }
+            // Aborted before the connection existed: already reported, never started.
+            guard attempt.bind(connection) else { return }
             do {
                 try await connection.start()
                 if attempt.finish() {
-                    host.postToMain { [weak self] in
-                        self?.current = connection
-                        onResult(nil)
-                    }
+                    host.postToMain { self?.connected(attempt, connection) }
                 } else {
-                    // Aborted while the client was starting and the abort's stop came too early.
+                    // Aborted (and reported) while starting, and the abort's stop came too early.
                     await connection.stop()
-                    host.postToMain { onResult(attempt.abortedError) }
                 }
             } catch {
-                attempt.finish()
-                let reported = attempt.abortedError ?? error
-                host.postToMain { onResult(reported) }
+                if attempt.finish() { host.postToMain { attempt.report(error) } }
             }
         }
     }
 
     func stop(onDone: @escaping () -> Void) {
-        let attempt = latest
-        attempt?.abort(ReconnectError.invalidState("Stopped while connecting"))
-        stopClient(attempt, then: onDone)
+        guard let attempt = latest else { return onDone() }
+        // A start in progress: it reports now, and its connection closes in the background
+        // (the client's stop waits for a pending token fetch, negotiate or connect).
+        if abort(attempt, ReconnectError.invalidState("Stopped while connecting")) { return onDone() }
+        guard let connection = attempt.connection else { return onDone() }
+        Task { [host] in
+            await connection.stop()
+            host.postToMain(onDone)
+        }
     }
 
-    /// Stops the attempt's connection, if it has one yet (an aborted attempt never builds one).
-    private func stopClient(_ attempt: StartAttempt?, then onDone: (() -> Void)?) {
-        let stop = Task { [host] in
-            if let connection = attempt?.connection { await connection.stop() }
-            if let onDone { host.postToMain(onDone) }
-        }
-        let previous = lastOp
-        lastOp = Task {
-            await previous?.value
-            await stop.value
+    /// A connection's onClosed. Main thread.
+    func connectionClosed(_ connection: HubConnection, _ error: Error?) {
+        if connection === current {
+            onClosed?(error)
+        } else if let attempt = latest, attempt.connection === connection {
+            // The client fires onClosed as soon as its start succeeded, so a server that closes
+            // right after the handshake can beat the success post; replay it after that.
+            attempt.earlyClose = EarlyClose(error: error)
         }
     }
 
     /// The Swift client does not expose the connection id.
     func connectionId() -> String? { nil }
+
+    /// Main thread.
+    private func connected(_ attempt: StartAttempt, _ connection: HubConnection) {
+        current = connection
+        attempt.report(nil)
+        if let early = attempt.earlyClose { onClosed?(early.error) }
+    }
+
+    /// Aborts a start that has not settled: reports `error` and closes its connection, if it
+    /// has one yet, in the background. False when the attempt already settled. Main thread.
+    @discardableResult
+    private func abort(_ attempt: StartAttempt, _ error: Error) -> Bool {
+        guard attempt.abort() else { return false }
+        attempt.report(error)
+        if let connection = attempt.connection { Task { await connection.stop() } }
+        return true
+    }
 }
 
-/// One start of the client: either it finishes or it is aborted first, never both.
+private struct EarlyClose {
+    let error: Error?
+}
+
+/// One start of the client: it either finishes or is aborted first, never both.
 private final class StartAttempt: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
-    private var aborted: Error?
+    private var aborted = false
     private var boundConnection: HubConnection?
     /// Set on the main thread before the start runs; called once when the attempt settles.
     var onFinish: (() -> Void)?
+    /// Main thread only.
+    private var onResult: ((Error?) -> Void)?
+    /// Main thread only. A close of this attempt's connection seen before its success.
+    var earlyClose: EarlyClose?
 
-    var abortedError: Error? {
-        lock.lock()
-        defer { lock.unlock() }
-        return aborted
+    init(onResult: @escaping (Error?) -> Void) {
+        self.onResult = onResult
+    }
+
+    /// Delivers the attempt's result once; later reports are dropped. Main thread.
+    func report(_ error: Error?) {
+        let onResult = self.onResult
+        self.onResult = nil
+        onResult?(error)
     }
 
     var connection: HubConnection? {
@@ -518,29 +543,25 @@ private final class StartAttempt: @unchecked Sendable {
     func bind(_ connection: HubConnection) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard aborted == nil else { return false }
+        guard !aborted else { return false }
         boundConnection = connection
         return true
     }
 
     /// Returns false when the attempt was aborted first.
-    @discardableResult
     func finish() -> Bool {
-        lock.lock()
-        let settled = finished || aborted != nil
-        finished = true
-        let done = settled ? nil : onFinish
-        lock.unlock()
-        done?()
-        return !settled
+        settle { finished = true }
     }
 
     /// Returns false when the attempt already finished or was aborted.
-    @discardableResult
-    func abort(_ error: Error) -> Bool {
+    func abort() -> Bool {
+        settle { aborted = true }
+    }
+
+    private func settle(_ mark: () -> Void) -> Bool {
         lock.lock()
-        let settled = finished || aborted != nil
-        if !settled { aborted = error }
+        let settled = finished || aborted
+        if !settled { mark() }
         let done = settled ? nil : onFinish
         lock.unlock()
         done?()
@@ -548,16 +569,9 @@ private final class StartAttempt: @unchecked Sendable {
     }
 }
 
-/// Lets onClosed handlers, registered before the controller exists, reach it, and drops
-/// closes of connections that are no longer the live one. Main thread.
+/// Lets onClosed handlers, registered before the client exists, reach it. Main thread.
 private final class ClosedForwarder: @unchecked Sendable {
-    weak var controller: ReconnectController?
     weak var client: ClientConnection?
-
-    func connectionClosed(_ connection: HubConnection?, _ error: Error?) {
-        guard let connection, client?.current === connection else { return }
-        controller?.onConnectionClosed(error)
-    }
 }
 
 private struct HostScheduler: Scheduler {
