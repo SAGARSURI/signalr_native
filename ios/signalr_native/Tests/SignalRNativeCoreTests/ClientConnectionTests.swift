@@ -30,9 +30,7 @@ final class ClientConnectionTests: XCTestCase {
         }
 
         func stop() async {
-            lock.lock()
-            stops += 1
-            lock.unlock()
+            lock.withLock { stops += 1 }
         }
 
         func completeStart(_ error: Error? = nil) {
@@ -42,6 +40,12 @@ final class ClientConnectionTests: XCTestCase {
             lock.unlock()
             if let error { c?.resume(throwing: error) } else { c?.resume() }
         }
+    }
+
+    /// Production code only posts from the main thread or the start Task; the box keeps the
+    /// test's GCD hop free of Sendable warnings.
+    private struct MainTask: @unchecked Sendable {
+        let run: () -> Void
     }
 
     private final class Timer: Cancellable {
@@ -66,7 +70,10 @@ final class ClientConnectionTests: XCTestCase {
                     return c
                 }
             },
-            postToMain: { task in DispatchQueue.main.async(execute: task) },
+            postToMain: { task in
+                let task = MainTask(run: task)
+                DispatchQueue.main.async { task.run() }
+            },
             schedule: { [unowned self] _, task in
                 let t = Timer(task)
                 self.timers.append(t)
