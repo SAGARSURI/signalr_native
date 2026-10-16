@@ -2,7 +2,7 @@
 
 Flutter plugin that wraps the **official** ASP.NET Core SignalR clients — Java on Android, Swift on iOS — for the trading app, where throughput, latency and tracing matter. This file is the hand-off for anyone (human or Claude) picking the work up: what was decided, why, what was measured, and where it stands.
 
-Status as of 2026-10-16: **M1 (Dart layer) and M2 (Android adapter) done and green** — analyze clean, 31 Dart + 16 Kotlin tests pass, debug APK builds · **M3 (iOS) designed, not started** · nothing has talked to a real hub yet (M4).
+Status as of 2026-10-16: **M1 (Dart layer), M2 (Android adapter) and M3 (iOS adapter) done and green** — analyze clean, 31 Dart + 16 Kotlin + 26 Swift tests pass, debug APK and iOS simulator app build · nothing has talked to a real hub yet (M4).
 
 ---
 
@@ -175,10 +175,11 @@ Transfer gotcha: when files are pushed to the Mac from a Claude cloud session, o
 - [x] Spike (a): passthrough types + envelope benchmarks (both platforms, real clients).
 - [x] **M1** Dart API, Pigeon schema, data-plane codec, 31 tests — analyze clean, all green.
 - [x] **M2** Android adapter — `HubSession`, codecs, `NullResultProtocol`, reconnect loop, data plane, plugin glue (Pigeon 29 generates Kotlin `suspend` host APIs; the plugin hops to `Dispatchers.Main`). Debug APK builds, 16 Kotlin tests green. Plugin build file comes from `flutter create --template=plugin` (AGP 9.1, Kotlin 2.4, minSdk 24) + `signalr-deps.gradle`.
-- [ ] **M3** iOS adapter — Swift: `PassthroughValue` (from spike) for args mode, `String`/`Data` for envelope, own `MsgpackWriter` (client's encoder is internal), plugin-owned reconnect loop (port of `ReconnectController`), `FrameWriter.swift` + batching, `LogHandler` bridge, map typed-invoke nil error to null payload, SPM `Package.swift` (+ podspec if the app still uses CocoaPods).
+- [x] **M3** iOS adapter — `HubSession` on the Swift client (pinned to commit 3938376 for the MessagePack UTF-8 fix), `PassthroughValue` + own `MsgpackWriter`/`MsgpackReader` (the client's are internal), `String`/`Data` for envelope, port of `ReconnectController`, `FrameWriter.swift` + `DataPlane`, log bridge, invoke asks for Optional result types so void/null results don't throw. **SPM only** (the client has no CocoaPods spec; Flutter 3.47 defaults to SPM); iOS 15+. `tool/verify_ios.sh` unit-tests the Flutter-free `Core/` from a throwaway package (26 tests), then builds the example for the simulator. Pigeon field `protocol` renamed `hubProtocol` (Swift keyword).
+- iOS gaps vs Android: no connection id (not exposed), no handshake timeout (no setting), JSON args mode can't carry scalar args/results/stream items, a null stream item crashes the client's JSON path.
 - [ ] **M4** Example + local ASP.NET Core bench hub; spike (b) on-device latency vs the current Dart SignalR client; spike (c) chaos: airplane mode, server restart, token expiry mid-retry.
 
 Open items:
 - Android SLF4J → observer log bridge (currently plugin-level logs only; the Java client's internal logs need an SLF4J binding).
 - Android cleartext HTTP for local bench testing (network security config in the example).
-- iOS args-mode scalar invoke results: unsupported by the Swift client's typed invoke — document or require envelope.
+- iOS JSON args mode: scalar args, results and stream items are unsupported by the Swift client — document in the README / server contract.
