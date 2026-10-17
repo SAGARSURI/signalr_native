@@ -39,6 +39,8 @@ ASP.NET Core hub (WebSockets; JSON now, MessagePack later)
 | D10 | **Tracing built in**: per-call trace id + `OutboundTiming` (Dart→native→native end→Dart), per-batch `InboundBatchTrace` (count, bytes, oldest bridge latency, decode µs), native + plugin logs via `SignalRObserver`. Wall-clock µs timestamps on both sides. | Sentry / New Relic integration via a single observer. |
 | D11 | **Void / null invoke results** on Android go through `NullResultProtocol` (wraps the client's HubProtocol and substitutes a sentinel for result-less completions). | The Java client's typed `invoke` never completes for void/null results (it only completes on a value). |
 | D12 | Android binding types per (protocol, mode): JSON args `JsonElement`, JSON envelope `String`, MessagePack args `Object`, MessagePack envelope `byte[]`. | Proven in spike (a); `JsonNode` fails on scalar args; `JsonElement` keeps original number text. |
+| D13 | **A server close that does not allow reconnect ends the connection.** When the server closes with an error and without `allowReconnect: true` (auth failure, `Context.Abort`, hub throwing on connect), the plugin stops reconnecting and reports Disconnected with the server's reason. A transport drop with no close message still reconnects per the policy. | Matches the .NET and JS clients. Reconnecting into a rejection loops and hides the reason. |
+| D14 | **The trading app runs in envelope mode** (D3/D4). The backend sends one pre-serialized argument per method. | About 30× faster on iOS JSON and byte-exact payloads on both platforms. |
 
 ## 3. Server contract (for the backend team)
 
