@@ -8,8 +8,7 @@ abstract class HubPlatform {
   Future<void> stop(int handle);
   Future<NativeCallResult> send(int handle, String method, List<Uint8List> args, String traceId);
   Future<NativeCallResult> invoke(int handle, String method, List<Uint8List> args, String traceId);
-  Future<NativeCallResult> streamStart(
-      int handle, int streamId, String method, List<Uint8List> args, String traceId);
+  Future<NativeCallResult> streamStart(int handle, int streamId, String method, List<Uint8List> args, String traceId);
   Future<void> streamCancel(int handle, int streamId);
   Future<void> dispose(int handle);
 

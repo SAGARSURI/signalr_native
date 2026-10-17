@@ -117,8 +117,7 @@ final class SignalRHub {
       onListen: () {
         final id = streamId = ++_streamCounter;
         _streams[id] = _ActiveStream(method, controller);
-        unawaited(_call(OutboundKind.stream, method, args, null,
-                (h, m, a, t) => _platform.streamStart(h, id, m, a, t))
+        unawaited(_call(OutboundKind.stream, method, args, null, (h, m, a, t) => _platform.streamStart(h, id, m, a, t))
             .then<void>((_) {}, onError: (Object e, StackTrace s) {
           if (_streams.remove(id) == null) return;
           controller.addError(e, s);
@@ -176,14 +175,12 @@ final class SignalRHub {
     try {
       final handle = _handleValue;
       if (handle == null || _state is! HubConnected) {
-        throw HubNotConnectedException('Cannot ${kind.name} "$method" while ${_state.runtimeType}',
-            traceId: traceId);
+        throw HubNotConnectedException('Cannot ${kind.name} "$method" while ${_state.runtimeType}', traceId: traceId);
       }
       var call = native(handle, method, encoded, traceId);
       if (timeout != null) {
         call = call.timeout(timeout,
-            onTimeout: () => throw HubTimeoutException(
-                '"$method" did not complete within ${timeout.inMilliseconds} ms',
+            onTimeout: () => throw HubTimeoutException('"$method" did not complete within ${timeout.inMilliseconds} ms',
                 traceId: traceId));
       }
       result = await call;
