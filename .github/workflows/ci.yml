@@ -1,0 +1,154 @@
+name: CI
+
+# The merge gate: Dart analyze + tests, the Android build + Kotlin unit tests, and (once the
+# iOS adapter is on the branch) the Swift core tests + iOS simulator build. Mirrors
+# tool/verify_android.sh and tool/verify_ios.sh, but fails the job on the first error.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: 3.47.6
+
+jobs:
+  dart:
+    name: Dart analyze + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Pub get + Pigeon
+        run: |
+          flutter pub get
+          mkdir -p lib/src/generated android/src/main/kotlin/com/faciletech/signalr_native ios/signalr_native/Sources/signalr_native
+          dart run pigeon --input pigeons/messages.dart
+          (cd example && flutter pub get)
+      - name: Analyze
+        run: flutter analyze lib test example/lib
+      - name: Dart tests
+        run: flutter test
+
+  android:
+    name: Android build + Kotlin tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Pub get + Pigeon
+        run: |
+          flutter pub get
+          mkdir -p lib/src/generated android/src/main/kotlin/com/faciletech/signalr_native ios/signalr_native/Sources/signalr_native
+          dart run pigeon --input pigeons/messages.dart
+      - name: Example app scaffold
+        working-directory: example
+        run: |
+          flutter create --org com.faciletech --project-name signalr_native_example --platforms android .
+          flutter pub get
+      - name: Debug APK (compiles plugin Kotlin, Pigeon glue, SignalR deps)
+        working-directory: example
+        run: flutter build apk --debug
+      - name: Kotlin unit tests
+        working-directory: example/android
+        run: ./gradlew --console=plain :signalr_native:testDebugUnitTest
+      - name: Upload Kotlin test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-test-reports
+          path: |
+            example/build/**/test-results/
+            example/build/**/reports/tests/
+          if-no-files-found: ignore
+
+  ios:
+    name: Swift tests + iOS build
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check for the iOS adapter
+        id: adapter
+        run: |
+          if [ -f ios/signalr_native/Package.swift ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ios/signalr_native/Package.swift on this branch; iOS checks skipped."
+          fi
+      - uses: subosito/flutter-action@v2
+        if: steps.adapter.outputs.present == 'true'
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Toolchain
+        if: steps.adapter.outputs.present == 'true'
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Pub get + Pigeon
+        if: steps.adapter.outputs.present == 'true'
+        run: |
+          flutter pub get
+          mkdir -p lib/src/generated android/src/main/kotlin/com/faciletech/signalr_native ios/signalr_native/Sources/signalr_native
+          dart run pigeon --input pigeons/messages.dart
+      - name: Swift core unit tests (no Flutter)
+        if: steps.adapter.outputs.present == 'true'
+        # The plugin package depends on Flutter's generated FlutterFramework package, which only
+        # exists inside an app build, so the Flutter-free core is tested from a throwaway package
+        # that compiles the same files (same approach as tool/verify_ios.sh).
+        run: |
+          CLIENT_REV="$(sed -n 's/.*revision: "\([0-9a-f]*\)".*/\1/p' ios/signalr_native/Package.swift)"
+          CORE="$RUNNER_TEMP/ios_core_tests"
+          mkdir -p "$CORE/Sources/SignalRNativeCore" "$CORE/Tests/SignalRNativeCoreTests"
+          cp ios/signalr_native/Sources/signalr_native/Core/*.swift "$CORE/Sources/SignalRNativeCore/"
+          cp ios/signalr_native/Tests/SignalRNativeCoreTests/*.swift "$CORE/Tests/SignalRNativeCoreTests/"
+          cat > "$CORE/Package.swift" <<PKG
+          // swift-tools-version: 5.10
+          import PackageDescription
+
+          let package = Package(
+              name: "SignalRNativeCore",
+              platforms: [.macOS(.v13)],
+              dependencies: [.package(url: "https://github.com/dotnet/signalr-client-swift", revision: "$CLIENT_REV")],
+              targets: [
+                  .target(name: "SignalRNativeCore", dependencies: [.product(name: "SignalRClient", package: "signalr-client-swift")]),
+                  .testTarget(name: "SignalRNativeCoreTests", dependencies: ["SignalRNativeCore"]),
+              ]
+          )
+          PKG
+          cd "$CORE" && swift test
+      - name: Example app scaffold
+        if: steps.adapter.outputs.present == 'true'
+        working-directory: example
+        run: |
+          flutter create --org com.faciletech --project-name signalr_native_example --platforms ios .
+          flutter pub get
+      - name: iOS simulator debug build (plugin Swift, Pigeon glue, SignalR client via SPM)
+        if: steps.adapter.outputs.present == 'true'
+        working-directory: example
+        run: flutter build ios --simulator --debug

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Fast checks before every push: Pigeon (if stale), analyze, Dart tests. Under a minute.
+# The Android/iOS builds and Kotlin/Swift tests run in CI (.github/workflows/ci.yml).
+# Install once per clone: bash tool/install_hooks.sh
+# Skip once: SKIP_PREPUSH=1 git push   (or git push --no-verify)
+set -euo pipefail
+
+[ "${SKIP_PREPUSH:-}" = "1" ] && { echo "pre-push: skipped (SKIP_PREPUSH=1)"; exit 0; }
+
+# Nothing to check when every pushed ref is a deletion.
+zero=0000000000000000000000000000000000000000
+pushing=0
+while read -r _ local_sha _ _; do
+  [ "$local_sha" != "$zero" ] && pushing=1
+done
+[ "$pushing" = "0" ] && exit 0
+
+cd "$(git rev-parse --show-toplevel)"
+
+if command -v flutter >/dev/null 2>&1; then
+  FLUTTER=(flutter); DART=(dart)
+elif [ -x "$HOME/fvm/default/bin/flutter" ]; then
+  FLUTTER=("$HOME/fvm/default/bin/flutter"); DART=("$HOME/fvm/default/bin/dart")
+elif command -v fvm >/dev/null 2>&1; then
+  FLUTTER=(fvm flutter); DART=(fvm dart)
+else
+  echo "pre-push: flutter not found; skipping checks (CI will still run them)" >&2
+  exit 0
+fi
+
+fail() { echo; echo "pre-push: $1 failed. Fix it, or push anyway with SKIP_PREPUSH=1." >&2; exit 1; }
+
+echo "pre-push: pub get"
+"${FLUTTER[@]}" pub get >/dev/null || fail "flutter pub get"
+(cd example && "${FLUTTER[@]}" pub get >/dev/null) || fail "flutter pub get (example)"
+
+GENERATED=lib/src/generated/messages.g.dart
+if [ ! -f "$GENERATED" ] || [ pigeons/messages.dart -nt "$GENERATED" ]; then
+  echo "pre-push: pigeon"
+  mkdir -p lib/src/generated android/src/main/kotlin/com/faciletech/signalr_native ios/signalr_native/Sources/signalr_native
+  "${DART[@]}" run pigeon --input pigeons/messages.dart >/dev/null || fail "pigeon"
+fi
+
+echo "pre-push: analyze"
+"${FLUTTER[@]}" analyze lib test example/lib || fail "flutter analyze"
+
+echo "pre-push: dart tests"
+"${FLUTTER[@]}" test || fail "flutter test"
+
+echo "pre-push: all checks passed"
