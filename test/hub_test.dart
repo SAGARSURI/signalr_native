@@ -61,10 +61,8 @@ void main() {
       expect(() => SignalRConfig(url: Uri.parse('/hub'), serverMethods: {'A'}), throwsArgumentError);
       expect(() => SignalRConfig(url: Uri.parse('https://x.io/h'), serverMethods: {}), throwsArgumentError);
       expect(
-          () => SignalRConfig(
-              url: Uri.parse('https://x.io/h'),
-              serverMethods: {'A'},
-              protocol: HubProtocol.messagePack),
+          () =>
+              SignalRConfig(url: Uri.parse('https://x.io/h'), serverMethods: {'A'}, protocol: HubProtocol.messagePack),
           throwsArgumentError);
     });
 
@@ -73,8 +71,7 @@ void main() {
       expect(() => SignalRConfig(url: url, serverMethods: {'A'}, argCounts: {'B': 2}), throwsArgumentError);
       expect(() => SignalRConfig(url: url, serverMethods: {'A'}, argCounts: {'A': 9}), throwsArgumentError);
       expect(
-          () => SignalRConfig(
-              url: url, serverMethods: {'A'}, payloadMode: PayloadMode.envelope, argCounts: {'A': 2}),
+          () => SignalRConfig(url: url, serverMethods: {'A'}, payloadMode: PayloadMode.envelope, argCounts: {'A': 2}),
           throwsArgumentError);
       expect(SignalRConfig(url: url, serverMethods: {'A'}, argCounts: {'A': 2}).argCountOf('A'), 2);
     });

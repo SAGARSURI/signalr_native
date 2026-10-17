@@ -59,6 +59,7 @@ class ConnectConfigMsg {
   });
 
   String url;
+
   /// Not `protocol`: Pigeon emits field names verbatim and that is a Swift keyword.
   ProtocolMsg hubProtocol;
   Map<String, String> headers;
@@ -68,6 +69,7 @@ class ConnectConfigMsg {
   int keepAliveIntervalMs;
   int handshakeTimeoutMs;
   ReconnectMsg reconnect;
+
   /// Applies to every method in both directions.
   PayloadModeMsg payloadMode;
 

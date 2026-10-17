@@ -9,12 +9,10 @@ import 'platform.dart';
 
 /// Real [HubPlatform]: Pigeon for control calls, one binary channel for data.
 final class PigeonHubPlatform extends HubPlatform implements SignalRFlutterApi {
-  PigeonHubPlatform({BinaryMessenger? messenger})
-      : _host = SignalRHostApi(binaryMessenger: messenger) {
+  PigeonHubPlatform({BinaryMessenger? messenger}) : _host = SignalRHostApi(binaryMessenger: messenger) {
     SignalRFlutterApi.setUp(this, binaryMessenger: messenger);
     // Raw messenger handler: frames are already binary, so no codec and no reply.
-    (messenger ?? ServicesBinding.instance.defaultBinaryMessenger)
-        .setMessageHandler(dataChannelName, _onData);
+    (messenger ?? ServicesBinding.instance.defaultBinaryMessenger).setMessageHandler(dataChannelName, _onData);
   }
 
   /// Must match the native adapters.
@@ -127,6 +125,6 @@ final class PigeonHubPlatform extends HubPlatform implements SignalRFlutterApi {
       ));
 
   @override
-  void onLog(int handle, LogEventMsg event) => _listeners[handle]
-      ?.onLog(NativeLog(event.level, event.message, event.timeMicros, traceId: event.traceId));
+  void onLog(int handle, LogEventMsg event) =>
+      _listeners[handle]?.onLog(NativeLog(event.level, event.message, event.timeMicros, traceId: event.traceId));
 }

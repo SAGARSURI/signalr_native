@@ -42,8 +42,7 @@ class FakePlatform extends HubPlatform {
 
   NativeCallResult _respond(String method, List<Uint8List> args) {
     sentArgs.add(args);
-    return onCall?.call(method, args) ??
-        const NativeCallResult(nativeStartMicros: 10, nativeEndMicros: 20);
+    return onCall?.call(method, args) ?? const NativeCallResult(nativeStartMicros: 10, nativeEndMicros: 20);
   }
 
   @override
@@ -64,8 +63,7 @@ class FakePlatform extends HubPlatform {
   }
 
   @override
-  Future<NativeCallResult> streamStart(
-      int h, int streamId, String method, List<Uint8List> args, String traceId) async {
+  Future<NativeCallResult> streamStart(int h, int streamId, String method, List<Uint8List> args, String traceId) async {
     calls.add('streamStart:$streamId:$method');
     return _respond(method, args);
   }
