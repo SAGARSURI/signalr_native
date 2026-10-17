@@ -37,12 +37,12 @@ Each step ends on its completion criterion. A step is done when its criterion ho
 1. **Understand.** Read the request, CONTEXT.md and the code it touches. Check every assumption about client behaviour
    against the client's own source or official docs; an API that cannot be found there does not exist.
    _Done when_ you can state the goal in one sentence and name each platform and file it touches.
-2. **Check for overlap.** List open PRs and remote branches.
+2. **Check for overlap.** List open PRs, drafts included, and remote branches.
    _Done when_ no other branch covers this work, or you are building on the one that does.
-3. **Plan.** Goal, approach (as a diagram), risks, test plan. Post it for Sagar's approval when the change touches
-   connection lifecycle, reconnect, threading or the public API, or runs past about 200 lines; otherwise it opens the
-   PR description.
-   _Done when_ Sagar approved it, or it is in the PR.
+3. **Plan.** Goal, approach (as a diagram), risks, test plan, written as the draft PR's description. When the change
+   touches connection lifecycle, reconnect, threading or the public API, or runs past about 200 lines, ask Sagar to
+   approve it there before implementing.
+   _Done when_ the plan is in the draft PR, and Sagar approved it where approval is needed.
 4. **Implement** on a feature branch, one concern per PR. Commit granularity is your call. Each behaviour change lands
    on Android and iOS together (**parity**), with tests on each covering the failure and race cases as well as the
    happy path. A gap that cannot close in this PR is written up in CONTEXT.md.
@@ -55,8 +55,8 @@ Each step ends on its completion criterion. A step is done when its criterion ho
 6. **Self-review, adversarially.** Read your diff as a reviewer hunting for wrong assumptions about the clients, races,
    thread hops, leaks, parity gaps and unhandled failures.
    _Done when_ each assumption traces to client source, a test, or a measured number.
-7. **Independent review.** Open the PR (template in `.github/pull_request_template.md`). CI and the Claude review run
-   on it. Fix each finding, or answer its thread with why not.
+7. **Independent review.** Mark the PR ready for review, its description filling every heading of
+   `.github/pull_request_template.md`. CI and the Claude review run on it. Fix each finding, or answer its thread with why not.
    _Done when_ CI is green and every review thread is fixed or answered.
 8. **Record.** Update CONTEXT.md: status, new D-numbers, known gaps, verified client facts. Update the README when
    public behaviour changed.
