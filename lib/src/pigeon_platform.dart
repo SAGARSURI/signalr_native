@@ -39,7 +39,7 @@ final class PigeonHubPlatform extends HubPlatform implements SignalRFlutterApi {
   @override
   Future<int> create(PlatformConfig c) => _host.create(ConnectConfigMsg(
         url: c.url,
-        protocol: c.messagePack ? ProtocolMsg.messagePack : ProtocolMsg.json,
+        hubProtocol: c.messagePack ? ProtocolMsg.messagePack : ProtocolMsg.json,
         headers: c.headers,
         skipNegotiation: c.skipNegotiation,
         hasAccessTokenProvider: c.hasAccessTokenProvider,

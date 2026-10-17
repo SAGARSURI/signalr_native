@@ -157,6 +157,23 @@ class ReconnectControllerTest {
         h.pendingStart!!(null) // late success must not resurrect the connection
         assertEquals("DISCONNECTED", h.states.last())
         assertTrue(!h.controller.isConnected)
+        assertEquals("the late success is closed again", 2, h.stopCalls)
+    }
+
+    @Test
+    fun startThatSucceedsAfterStopFinishedIsClosed() {
+        val h = Harness(standard)
+        var error: Throwable? = null
+        h.controller.start { error = it }
+        var stopped = false
+        h.controller.stop { stopped = true }
+        assertTrue(stopped)
+        assertEquals(1, h.stopCalls)
+        h.pendingStart!!(null) // the start won the race inside the client
+        assertEquals("the late success is closed again", 2, h.stopCalls)
+        assertTrue(error != null)
+        assertEquals(listOf("CONNECTING", "DISCONNECTED"), h.states)
+        assertTrue(!h.controller.isConnected)
     }
 
     @Test

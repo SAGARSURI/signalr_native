@@ -56,7 +56,9 @@ internal class ReconnectController(
         sink.onState(StateKind.CONNECTING, null, 0, null)
         connection.start { error ->
             if (phase != Phase.STARTING) {
-                // stop() was called while connecting.
+                // stop() was called while connecting. If its stop already finished and this
+                // start still succeeded, nothing else would close the socket.
+                if (error == null && phase == Phase.STOPPED) connection.stop {}
                 callback(error ?: IllegalStateException("Stopped while connecting"))
                 return@start
             }
@@ -124,7 +126,11 @@ internal class ReconnectController(
         attemptInFlight = true
         connection.start { error ->
             attemptInFlight = false
-            if (phase != Phase.RECONNECTING) return@start
+            if (phase != Phase.RECONNECTING) {
+                // stop() during the attempt: same late-success case as in start().
+                if (error == null && phase == Phase.STOPPED) connection.stop {}
+                return@start
+            }
             if (error == null) {
                 phase = Phase.CONNECTED
                 sink.onState(StateKind.CONNECTED, connection.connectionId(), 0, null)

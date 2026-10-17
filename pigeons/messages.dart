@@ -44,7 +44,7 @@ class ReconnectMsg {
 class ConnectConfigMsg {
   ConnectConfigMsg({
     required this.url,
-    required this.protocol,
+    required this.hubProtocol,
     required this.headers,
     required this.skipNegotiation,
     required this.hasAccessTokenProvider,
@@ -59,7 +59,9 @@ class ConnectConfigMsg {
   });
 
   String url;
-  ProtocolMsg protocol;
+
+  /// Not `protocol`: Pigeon emits field names verbatim and that is a Swift keyword.
+  ProtocolMsg hubProtocol;
   Map<String, String> headers;
   bool skipNegotiation;
   bool hasAccessTokenProvider;
