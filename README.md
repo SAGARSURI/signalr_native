@@ -33,7 +33,7 @@ bash tool/verify_android.sh                     # + example scaffold, debug APK,
 git config core.hooksPath .githooks             # once per clone: format, analyze, Dart tests before each push
 ```
 
-CI (`.github/workflows/ci.yml`) runs `tool/ci.sh dart`, `android` and `ios` on every pull request. Format with `dart format .` (page width 120, set in `analysis_options.yaml`).
+CI (`.github/workflows/ci.yml`) runs `tool/ci.sh dart`, `android` and `ios` on every pull request. Format with `dart format --page-width=120 lib test pigeons example/lib`.
 
 Requirements: Flutter 3.47+, Android Studio (its JBR is used for Gradle). iOS 14+ once the iOS adapter lands.
 

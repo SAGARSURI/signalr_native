@@ -40,11 +40,13 @@ example() {
 
 dart_checks() {
   generate
-  step "format"
-  find lib test pigeons example/lib -name '*.dart' -not -path 'lib/src/generated/*' -print0 \
-    | xargs -0 "${DART[@]}" format --output=none --set-exit-if-changed
-  step "analyze"
   (cd example && "${FLUTTER[@]}" pub get >/dev/null)
+  step "format"
+  # Width passed explicitly: the example package can't resolve the root analysis_options
+  # include (no flutter_lints there), and the formatter then ignores the whole file.
+  find lib test pigeons example/lib -name '*.dart' -not -path 'lib/src/generated/*' -print0 \
+    | xargs -0 "${DART[@]}" format --page-width=120 --output=none --set-exit-if-changed
+  step "analyze"
   "${FLUTTER[@]}" analyze lib test example/lib
   step "dart tests"
   "${FLUTTER[@]}" test
