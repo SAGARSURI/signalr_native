@@ -48,6 +48,7 @@ Requirements: Flutter 3.47+, Android Studio (its JBR is used for Gradle). iOS 14
 | `test/` | Dart tests (fake platform, frame codec) |
 | `example/` | Bench app: connect, per-method counts, invoke, bridge latency |
 | `docs/CONTEXT.md` | Decisions, spike results, server contract, roadmap |
+| `AGENTS.md` | How agents and contributors work on this repo |
 
 ## License
 
