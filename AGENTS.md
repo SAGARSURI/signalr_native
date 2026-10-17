@@ -16,7 +16,8 @@ Every change, proposal, plan and report leads with a visual. Text only explains 
 - Structure or public API: a before/after diagram, or a before/after code block of the API surface.
 - Parity, options, numbers: a table.
 
-GitHub renders Mermaid in PRs, issues and Markdown files, so diagrams go inline.
+GitHub renders Mermaid in PRs, issues and Markdown files, so diagrams go inline there. In chat, where Mermaid may not
+render, use a table or link to the PR or file holding the diagram.
 
 ## Decision rights
 
@@ -66,5 +67,6 @@ Each step ends on its completion criterion. A step is done when its criterion ho
 
 ## Several agents at once
 
+- Open a draft PR as soon as work starts, so the overlap check in step 2 can find it.
 - One owner per branch. Other agents verify and comment; they edit only when the owner or Sagar asks.
 - Verifier and reviewer agents report findings with evidence: the command run, its output, the source line.
