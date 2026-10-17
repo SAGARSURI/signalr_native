@@ -30,7 +30,10 @@ final result = await hub.invoke('PlaceOrder', [order]);
 dart run pigeon --input pigeons/messages.dart   # generated code is not committed
 bash tool/verify.sh                             # pigeon + analyze + Dart tests
 bash tool/verify_android.sh                     # + example scaffold, debug APK, Kotlin unit tests
+git config core.hooksPath .githooks             # once per clone: format, analyze, Dart tests before each push
 ```
+
+CI (`.github/workflows/ci.yml`) runs `tool/ci.sh dart`, `android` and `ios` on every pull request. Format with `dart format .` (page width 120, set in `analysis_options.yaml`).
 
 Requirements: Flutter 3.47+, Android Studio (its JBR is used for Gradle). iOS 14+ once the iOS adapter lands.
 

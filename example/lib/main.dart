@@ -85,7 +85,8 @@ class _BenchPageState extends State<BenchPage> {
         padding: const EdgeInsets.all(12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           TextField(controller: _url, decoration: const InputDecoration(labelText: 'Hub URL')),
-          TextField(controller: _methods, decoration: const InputDecoration(labelText: 'Server methods (comma-separated)')),
+          TextField(
+              controller: _methods, decoration: const InputDecoration(labelText: 'Server methods (comma-separated)')),
           SegmentedButton<PayloadMode>(
             segments: const [
               ButtonSegment(value: PayloadMode.args, label: Text('args')),

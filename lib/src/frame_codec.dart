@@ -34,9 +34,7 @@ abstract final class FrameCodec {
 
   /// Parses a batch. Argument bytes are views into [data]'s buffer (no copies).
   static DecodedBatch decode(ByteData data) {
-    if (data.lengthInBytes < headerSize ||
-        data.getUint8(0) != 0x53 ||
-        data.getUint8(1) != 0x52) {
+    if (data.lengthInBytes < headerSize || data.getUint8(0) != 0x53 || data.getUint8(1) != 0x52) {
       throw const HubProtocolException('Not a signalr_native data frame');
     }
     final frameVersion = data.getUint8(2);

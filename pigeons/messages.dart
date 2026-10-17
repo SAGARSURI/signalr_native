@@ -67,6 +67,7 @@ class ConnectConfigMsg {
   int keepAliveIntervalMs;
   int handshakeTimeoutMs;
   ReconnectMsg reconnect;
+
   /// Applies to every method in both directions.
   PayloadModeMsg payloadMode;
 
